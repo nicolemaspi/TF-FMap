@@ -1,0 +1,515 @@
+---
+title: "Trabajo Final de FMAP"
+author: "Nicole Maspi"
+date: "8/29/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+dir <- "~/OneDrive - Facultad de Ciencias Económicas - Universidad de Buenos Aires/Maestría/2T20/Fundamentos de métodos análiticos predictivos/Trabajo Final/FMAP-Rmarkdown"
+setwd(dir)
+```
+
+```{r libraries}
+library(tidyverse)
+library(modeest)
+library(moments) 
+library(openxlsx)
+library(GGally)
+library(ggforce)
+library(ggsci)
+library(ggrepel)
+library(scales)
+library(anomalize)
+```
+
+# ANALISIS EXPLORATORIO DE DATOS
+
+```{r}
+gmr_OxCGRT$E1_Income.support <- as.factor(gmr_OxCGRT$E1_Income.support)
+summary(gmr_OxCGRT)
+```
+
+```{r boxplot}
+Datos_columna = gmr_OxCGRT[, c('workplaces')] %>% 
+  gather(Elementos ,valor)
+
+medidas = apply(gmr_OxCGRT[, c('workplaces')], 2, summary) %>%
+  t %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Elementos") %>% 
+  rename_all(list(~make.names(.)))
+ggplot(Datos_columna, aes(x =Elementos, y =  valor)) +
+  geom_sina(aes(color = Elementos)) + 
+  geom_errorbar(aes(y = Median, ymin = X1st.Qu., ymax= X3rd.Qu.), 
+                data = medidas, width = 0.5) + 
+  geom_point(aes(y = Median), color = "black", size = 2, data = medidas) + 
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma) +
+  theme(plot.title = element_text(size=11), legend.position = "none") +
+  ggtitle("Dispersión de la Movilidad Laboral") +
+  ylab("Cambio en la movilidad laboral con respecto a los valores de referencia") +
+  scale_color_manual(values =  pal_locuszoom("default", alpha = 0.5)(6))
+ggsave("scatterplot.png", height = 10, width = 10)
+```
+
+```{r}
+Datos_columna = gmr_OxCGRT[, c('active')] %>% 
+  gather(Elementos ,valor)
+
+medidas = apply(gmr_OxCGRT[, c('active')], 2, summary) %>%
+  t %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Elementos") %>% 
+  rename_all(list(~make.names(.)))
+ggplot(Datos_columna, aes(x =Elementos, y =  valor)) +
+  geom_sina(aes(color = Elementos)) + 
+  geom_errorbar(aes(y = Median, ymin = X1st.Qu., ymax= X3rd.Qu.), 
+                data = medidas, width = 0.5) + 
+  geom_point(aes(y = Median), color = "black", size = 2, data = medidas) + 
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma) +
+  theme(plot.title = element_text(size=11), legend.position = "none") +
+  ggtitle("Dispersión de los casos activos por día") +
+  ylab("Casos activos por día") +
+  scale_color_manual(values =  pal_lancet("lanonc", alpha = 0.5)(6))
+ggsave("activescatterplot.png", height = 10, width = 10)
+```
+
+```{r}
+ggplot(gmr_OxCGRT, aes(x=active))+
+  geom_density(color="darkblue", fill="lightblue")+
+  geom_vline(aes(xintercept=mean(active)), color="blue",
+             linetype="dashed")+
+  scale_y_continuous(labels = comma)+
+  scale_x_continuous(breaks= scales::pretty_breaks(n=2), labels = comma)+
+  xlim(0, 15000)+
+  labs(title="Curva de Densidad de los Casos activos por día",x="Casos activos por día", y = "Densidad")+
+  theme_classic()
+ggsave("activedensity_curve.png", height = 10, width = 10)
+```
+
+
+```{r histogram}
+ggplot(gmr_OxCGRT, aes(x=workplaces))+
+  geom_density(color="red", fill="pink")+
+  geom_vline(aes(xintercept=mean(workplaces)), color="red",
+             linetype="dashed")+
+  labs(title="Curva de Densidad de la Movilidad Laboral",x="Porcentaje de variación con respecto al valor de referencia", y = "Densidad")+
+  scale_x_continuous(breaks= scales::pretty_breaks(n=20))+
+  theme_classic()
+ggsave("density_curve.png", height = 10, width = 10)
+
+```
+
+```{r most frequent values list}
+f <- function (x) with(rle(sort(x)), values[order(lengths, decreasing = TRUE)])
+f(gmr_OxCGRT$workplaces)
+```
+
+```{r mode}
+mfv(gmr_OxCGRT$workplaces)
+mfv(gmr_OxCGRT$active)
+
+```
+
+```{r sd y var}
+sd(gmr_OxCGRT$workplaces)
+var(gmr_OxCGRT$workplaces)
+sd(gmr_OxCGRT$active)
+var(gmr_OxCGRT$active)
+```
+```{r asimetria}
+#skewness(gmr_OxCGRT$workplaces)
+skewness(gmr_OxCGRT$active)
+
+```
+
+```{r curtosis}
+kurtosis(gmr_OxCGRT$workplaces)
+kurtosis(gmr_OxCGRT$active)
+
+```
+
+```{r}
+labels <- c("No se han realizado transferencias monetarias", "Las transferencias monetarias compensan menos del 50% de la pérdida salarial", "Las transferencias monetarias compensan más del 50% de la pérdida salarial" )
+ggplot(data = gmr_OxCGRT)+ 
+  geom_bar(fill="darkgreen", mapping = aes(x = E1_Income.support, y = ..prop.., group = 1), stat = "count") + 
+  scale_y_continuous(labels = scales::percent_format())+
+  labs(title="Frecuencias del indicador E1_Income.Support", y = "Porcentaje del total") +
+  theme_minimal()
+ggsave("e1_income.png", height = 10, width = 10)
+
+```
+
+#GRAFICAS DE LAS SERIES DE TIEMPO EN GENERAL Y POR PAISES / clusterS
+```{r}
+## For the time series decomposition
+library(lubridate)
+library(tsibble)
+library(feasts)
+library(timeDate)
+library(RcppQuantuccia)
+## --------------------------------------------------------------------
+## --------------------------------------------------------------------
+## Convenience functions
+## --------------------------------------------------------------------
+## such an ugly function (because it's like 10 years old)
+my_colors <- function(palette="cb"){
+### The palette with black:
+  cb.palette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+  ## Same one Reversed
+  rcb.palette <- rev(cb.palette)
+  ## Blue and yellow first choices
+  bly.palette <- c("#E69F00", "#0072B2", "#000000", "#56B4E9", "#009E73", "#F0E442", "#D55E00", "#CC79A7")
+  if (palette=="cb") return(cb.palette) else if (palette=="rcb") return(rcb.palette) else if (palette=="bly") return(bly.palette) else stop("Choose cb, rcb, or bly ony.")
+}
+is_max <- function(x) {
+  seq_along(x) == which.max(x)
+}
+
+raw_workplace <- gmr_OxCGRT %>%
+    dplyr::rename(mode = country) %>%
+mutate(#mode = tools::toTitleCase(mode),
+         weekend = isWeekend(date),
+         holiday = isHoliday(date)) %>%
+  mutate(max_day = ifelse(is_max(workplaces), date, NA),
+         max_day = as_date(max_day))
+
+p_raw_workplace <- ggplot(raw_workplace, mapping = aes(x = date, y = workplaces,
+                                               group = mode, color = mode)) +
+    geom_vline(data = subset(raw_workplace, holiday == TRUE),
+               mapping = aes(xintercept = date),
+               color = my_colors("bly")[5], size = 2.9, alpha = 0.1) +
+    geom_hline(yintercept = 0, color = "gray40") +
+    geom_line() +
+    theme_minimal()+
+    theme(legend.position = "bottom")+
+    guides(color=guide_legend(ncol = 12))+
+    scale_x_date(labels = date_format("%m-%d"), breaks = breaks_pretty(20))+
+    labs(x = "Fecha", y = "Movilidad laboral relativa",
+         color = "Países",
+         title = "Tendencias relativas de actividad laboral en diversos países. Datos de referencia sin corrección por estacionalidad semanal",
+         subtitle = "Los fines de semana se muestran como barras verticales.",
+         caption = "Elaboración propia en base a Google Mobility Reports")
+
+
+ggsave("workplace.png", plot = p_raw_workplace, height = 10, width = 20)
+```
+
+
+```{r america}
+raw_america <- gmr_OxCGRT  %>%
+  dplyr::rename(mode = country) %>%
+  dplyr::mutate(#mode = tools::toTitleCase(mode),
+                weekend = isWeekend(date),
+                holiday = isHoliday((date))) %>%
+  mutate(max_day = ifelse(is_max(workplaces), date, NA),
+         max_day = as_date(max_day))
+
+p_raw_america <- raw_america %>% filter(continent == "Americas") %>%
+  ggplot(mapping = aes(x = date, y = workplaces, group = mode, color = mode)) +
+  geom_vline(data = subset(raw_america, holiday == TRUE),
+             mapping = aes(xintercept = date),
+             color = my_colors("bly")[5], size = 2.9, alpha = 0.1) +
+  geom_hline(yintercept = 0, color = "gray40") +
+  geom_line() +
+  theme_minimal()+
+  facet_wrap(. ~ cluster, ncol=2)+
+  theme(legend.position = "bottom"
+        ,plot.title = element_text(size = 24)
+        ,plot.subtitle = element_text(size = 20))+
+  guides(color=guide_legend(ncol = 12))+
+  scale_x_date(labels = date_format("%m-%d"), breaks = breaks_pretty(20))+
+  labs(x = "Fecha", y = "Movilidad laboral relativa",
+       color = "Países",
+       title = "Tendencias relativas de actividad laboral en América por cluster. Datos de referencia sin corrección por estacionalidad semanal",
+       subtitle = "Los fines de semana se muestran como barras verticales.",
+       caption = "Elaboración propia en base a Google Mobility Reports")
+
+
+p_raw_america
+
+ggsave("america.png", plot = p_raw_america, height = 10, width = 20)
+
+```
+
+```{r asia}
+raw_asia <- gmr_OxCGRT  %>%
+  dplyr::rename(mode = country) %>%
+  dplyr::mutate(#mode = tools::toTitleCase(mode),
+                weekend = isWeekend(date),
+                holiday = isHoliday((date))) %>%
+  mutate(max_day = ifelse(is_max(workplaces), date, NA),
+         max_day = as_date(max_day))
+
+p_raw_asia <- raw_asia %>% filter(continent == "Asia") %>%
+  ggplot(mapping = aes(x = date, y = workplaces, group = mode, color = mode)) +
+  geom_vline(data = subset(raw_asia, holiday == TRUE),
+             mapping = aes(xintercept = date),
+             color = my_colors("bly")[5], size = 2.9, alpha = 0.1) +
+  geom_hline(yintercept = 0, color = "gray40") +
+  geom_line() +
+  theme_minimal()+
+  facet_wrap(. ~ cluster, ncol=2)+
+  theme(legend.position = "bottom")+
+  guides(color=guide_legend(ncol = 12))+
+  scale_x_date(labels = date_format("%m-%d"), breaks = breaks_pretty(20))+
+  labs(x = "Fecha", y = "Movilidad laboral relativa",
+       color = "Países",
+       title = "Tendencias relativas de actividad laboral en Asia por cluster. Datos de referencia sin corrección por estacionalidad semanal",
+       subtitle = "Los fines de semana se muestran como barras verticales.",
+       caption = "Elaboración propia en base a Google Mobility Reports")
+
+
+p_raw_asia
+
+ggsave("asia.png", plot = p_raw_asia, height = 10, width = 20)
+
+```
+
+```{r africa}
+raw_africa <- gmr_OxCGRT  %>%
+  dplyr::rename(mode = country) %>%
+  dplyr::mutate(#mode = tools::toTitleCase(mode),
+                weekend = isWeekend(date),
+                holiday = isHoliday((date))) %>%
+  mutate(max_day = ifelse(is_max(workplaces), date, NA),
+         max_day = as_date(max_day))
+
+p_raw_africa <- raw_africa %>% filter(continent == "Africa") %>%
+  ggplot(mapping = aes(x = date, y = workplaces, group = mode, color = mode)) +
+  geom_vline(data = subset(raw_africa, holiday == TRUE),
+             mapping = aes(xintercept = date),
+             color = my_colors("bly")[5], size = 2.9, alpha = 0.1) +
+  geom_hline(yintercept = 0, color = "gray40") +
+  geom_line() +
+  theme_minimal()+
+  facet_wrap(. ~ cluster, ncol=2)+
+  theme(legend.position = "bottom")+
+  guides(color=guide_legend(ncol = 12))+
+  scale_x_date(labels = date_format("%m-%d"), breaks = breaks_pretty(20))+
+  labs(x = "Fecha", y = "Movilidad laboral relativa",
+       color = "Países",
+       title = "Tendencias relativas de actividad laboral en África por cluster. Datos de referencia sin corrección por estacionalidad semanal",
+       subtitle = "Los fines de semana se muestran como barras verticales.",
+       caption = "Elaboración propia en base a Google Mobility Reports")
+
+
+p_raw_africa
+
+ggsave("africa.png", plot = p_raw_africa, height = 10, width = 20)
+
+```
+
+```{r oceania}
+raw_oceania <- gmr_OxCGRT  %>%
+  dplyr::rename(mode = country) %>%
+  dplyr::mutate(#mode = tools::toTitleCase(mode),
+                weekend = isWeekend(date),
+                holiday = isHoliday((date))) %>%
+  mutate(max_day = ifelse(is_max(workplaces), date, NA),
+         max_day = as_date(max_day))
+
+p_raw_oceania <- raw_oceania %>% filter(continent == "Oceania") %>%
+  ggplot(mapping = aes(x = date, y = workplaces, group = mode, color = mode)) +
+  geom_vline(data = subset(raw_workplace, holiday == TRUE),
+               mapping = aes(xintercept = date),
+               color = my_colors("bly")[5], size = 2.9, alpha = 0.1) +
+    geom_hline(yintercept = 0, color = "gray40") +
+    geom_line() +
+    theme_minimal()+
+    theme(legend.position = "bottom")+
+    guides(color=guide_legend(ncol = 12))+
+    scale_x_date(labels = date_format("%m-%d"), breaks = breaks_pretty(20))+
+  labs(x = "Fecha", y = "Movilidad laboral relativa",
+       color = "Países",
+       title = "Tendencias relativas de actividad laboral en Oceanía. Datos de referencia sin corrección por estacionalidad semanal",
+       subtitle = "Los fines de semana se muestran como barras verticales. Todos los países pertenecen al cluster 2.",
+       caption = "Elaboración propia en base a Google Mobility Reports")
+
+
+p_raw_oceania
+
+ggsave("oceania.png", plot = p_raw_oceania, height = 10, width = 20)
+
+```
+
+```{r europe}
+raw_europe <- gmr_OxCGRT  %>%
+  dplyr::rename(mode = country) %>%
+  dplyr::mutate(#mode = tools::toTitleCase(mode),
+                weekend = isWeekend(date),
+                holiday = isHoliday((date))) %>%
+  mutate(max_day = ifelse(is_max(workplaces), date, NA),
+         max_day = as_date(max_day))
+
+p_raw_europe <- raw_europe %>% filter(continent == "Europe") %>%
+  ggplot(mapping = aes(x = date, y = workplaces, group = mode, color = mode)) +
+  geom_vline(data = subset(raw_europe, holiday == TRUE),
+             mapping = aes(xintercept = date),
+             color = my_colors("bly")[5], size = 2.9, alpha = 0.1) +
+  geom_hline(yintercept = 0, color = "gray40") +
+  geom_line() +
+  theme_minimal()+
+  facet_wrap(. ~ cluster, ncol=2)+
+  theme(legend.position = "bottom")+
+  guides(color=guide_legend(ncol = 12))+
+  scale_x_date(labels = date_format("%m-%d"), breaks = breaks_pretty(20))+
+  labs(x = "Fecha", y = "Movilidad laboral relativa",
+       color = "Países",
+       title = "Tendencias relativas de actividad laboral en europe por cluster. Datos de referencia sin corrección por estacionalidad semanal",
+       subtitle = "Los fines de semana se muestran como barras verticales.",
+       caption = "Elaboración propia en base a Google Mobility Reports")
+
+
+p_raw_europe
+
+ggsave("europe.png", plot = p_raw_europe, height = 10, width = 20)
+```
+
+#DETECCION DE ANOMALIAS (general y america - faltan demas continentes)
+
+```{r}
+library(anomalize)
+gmr_OxCGRT_anomalized <- gmr_OxCGRT %>%
+    group_by(country)  %>%
+    time_decompose(workplaces, merge = TRUE, method = "stl") %>%
+    anomalize(remainder,  method = "iqr") %>%
+  time_recompose()
+
+#gmr_OxCGRT_anomalized %>% glimpse()
+
+gmr_OxCGRT_anomalized %>%
+     plot_anomalies(time_recomposed = TRUE, ncol = 3, alpha_dots = 0.25) +
+    labs(title = "Workplaces Anomalies", subtitle = "STL + IQR Methods") 
+ggsave("worldwide_outliters.png", height = 30, width = 20)
+
+```
+
+```{r}
+gmr_OxCGRT$date <- as.POSIXct(gmr_OxCGRT$date, format="%Y-%m-%d")
+gmr_OxCGRT_anomalized <- gmr_OxCGRT %>%
+  filter(continent == "Americas") %>%
+  group_by(country)  %>%
+  time_decompose(workplaces, frequency = 7, merge = TRUE) %>%
+  anomalize(remainder, method= "iqr", alpha = 0.025) %>%
+  time_recompose()
+
+#gmr_OxCGRT_anomalized %>% glimpse()
+
+gmr_OxCGRT_anomalized %>%
+  plot_anomalies(ncol = 2, alpha_dots = 0.25)
+ggsave("america_outliers.png", height = 30, width = 20)
+```
+
+#RESULTADOS DEL clusterING
+
+```{r}
+# 8.9 Se eliminan las variables que contengan desviación estándar igual a cero
+clustering <- clustering[, colSums(clustering != 0) > 0]
+
+fviz_cluster(final, data = clustering[,-c(2815:2816)], pointsize = 0.5, labelsize = 6, outlier.color = "black", outlier.shape = 5) + 
+  theme_minimal() +
+  ggtitle("Países por cluster") 
+ggsave("clustering.png", height = 10, width = 20)
+```
+
+
+```{r Grafico paises del mundo por cluster}
+#Linea 150 del archivo OXFORD
+
+library(ggmap)
+library(maps)
+library(scales)
+map.world <- map_data("world")
+
+anti_join(clustering, map.world, by = c('country' = 'region'))
+
+clustering_recoded <- clustering
+clustering_recoded$country <- recode(clustering_recoded$country,'Antigua and Barbuda' = 'Antigua',
+                          'Antigua and Barbuda' = 'Barbuda',
+                          'The Bahamas' = 'Bahamas',
+                          "Côte d'Ivoire" = 'Ivory Coast',
+                          'Czechia' = 'Czech Republic',
+                          'North Macedonia' = 'Macedonia',
+                          'Myanmar (Burma)' = 'Myanmar',
+                          'Trinidad and Tobago' = 'Trinidad',
+                          'Trinidad and Tobago' = 'Tobago',
+                          'United States' = 'USA',
+                          'United Kingdom' = 'UK')
+
+#map.world %>%
+  #group_by(region) %>%
+  #summarise() %>%
+  #print(n = Inf)
+
+map.world_joined <- left_join(map.world, clustering_recoded, by = c('region' = 'country'))
+ggplot(map.world_joined, aes( x = long, y = lat, group = group )) +
+  geom_polygon(aes(fill = cluster)) +
+  scale_fill_gradientn(colours = c("#e60000",'#404E88')
+                       ,values = scales::rescale(c(100,96581,822675,3190373,10000000))
+                       ,labels = comma
+                       ,breaks = c(100,96581,822675,3190373,10000000)
+  ) +
+  guides(fill = guide_legend(reverse = T)) +
+  labs(fill = 'bbl/day'
+       ,title = 'Países del mundo agrupados según su patrón de movilidad laboral relativa y transferencias monetarias a los hogares provistas los gobiernos'
+       ,subtitle = 'Países en rojo pertencenen al cluster 1, y aquellos en azul al cluster 2'
+       ,x = NULL
+       ,y = NULL) +
+  theme(text = element_text(color = '#000000')
+        ,plot.title = element_text(size = 24)
+        ,plot.subtitle = element_text(size = 20)
+        ,axis.ticks = element_blank()
+        ,axis.text = element_blank()
+        ,panel.grid = element_blank()
+        ,panel.background = element_rect(fill = '#FFFFFF')
+        ,plot.background = element_rect(fill = '#FFFFFF')
+        ,legend.position = c(25,50)
+  ) 
+ggsave("map_clustered.png", height = 10, width = 20)
+```
+
+#ANALISIS DE SUPERVIVENCIA
+
+```{r}
+ggsurvplot(fit,
+           pval = TRUE, conf.int = TRUE,
+           linetype = "strata",
+           surv.median.line = "hv",
+           ggtheme = theme_minimal(),
+           palette = c('#404E88',"#e60000", "#000000"))
+ggsave("kaplan_meier.jpg", height = 10, width = 20)
+```
+
+```{r}
+ggforest(res.cox, data = oxford_gmr)
+ggsave("cox.jpg", height = 10, width = 20)
+```
+
+
+#INFERENCIA CAUSAL
+```{r}
+plot(impact)
+ggsave("impact.png", height = 10, width = 20)
+```
+
+
+
+```{r}
+gmr_work_argentina <- gmr_argentina[,c(1,2,7)]
+
+gmr_work_argentina$sub_region <- as.character(gmr_work_argentina$sub_region)
+gmr_work_argentina$sub_region[gmr_work_argentina$sub_region==""]<-"Argentina"
+
+argentina_work <- gmr_work_argentina %>%
+  pivot_wider(names_from= "sub_region", values_from= "workplaces")
+
+
+argentina_work <- left_join(argentina_work, oxford_argentina, by = c("date" = "Date"))
+
+```
+

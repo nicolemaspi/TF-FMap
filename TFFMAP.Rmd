@@ -1,0 +1,430 @@
+---
+title: "TFFMAP"
+author: "Nicole Maspi"
+date: "9/19/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+dir <- "~/OneDrive - Facultad de Ciencias Económicas - Universidad de Buenos Aires/Maestría/2T20/Fundamentos de métodos análiticos predictivos/Trabajo Final/FMAP-Rmarkdown"
+setwd(dir)
+```
+
+```{r bibliotecas}
+# 1. Importación de bibliotecas
+library(tidyverse) # Conjunto de bibliotecas que permite la manipulación de tablas
+library(lubridate) # Manipulación de fechas y generación de atributos asociados a la fecha
+library(COVID19) # Base de datos COVID-19 Data Hub
+library(imputeTS) # Imputación de valores faltantes en series de tiempo
+library(zoo) #Reemplazo de valores faltantes
+library(factoextra) # K-Means Clustering
+library(countrycode) # Generación de atributos asociados a la ubicación geográfica de los paises
+library(survival) # Análisis de supervivencia
+library(survminer) # Análisis de supervivencia
+library(modeest) #Moda
+```
+
+```{r bases de datos}
+# 2.1 Descarga de Google Mobility Report (GMR)
+gmr <- read.csv(url("https://www.gstatic.com/covid19/mobility/Global_Mobility_Report.csv"))
+gmr$date <- as.Date(as.character(gmr$date), format = "%Y-%m-%d") #Formato fecha
+
+# 2.2 Descarga de OxCGRT COVID-19 Government Response Tracker (OxCGRT) 
+OxCGRT <- read.csv(url("https://raw.githubusercontent.com/OxCGRT/covid-policy-tracker/master/data/OxCGRT_latest.csv"))
+OxCGRT$Date <- ymd(OxCGRT$Date)
+
+#2.3 Descarga de COVID-19 Data Hub
+x <- covid19()
+```
+
+```{r preprocesamiento gmr}
+# 3. Preprocesamiento de GMR
+
+# 3.1 Selección de países y atributos
+gmr <- gmr %>%
+  filter(sub_region_1=="" & sub_region_2==""  & metro_area=="" )
+
+gmr <- gmr[, c("country_region_code", "country_region", "date", "workplaces_percent_change_from_baseline")]
+
+# 3.2 Modificación del nombre de los atributos
+colnames(gmr) <- (c("country_code", "country", "date", "workplaces"))
+
+# 3.3 El identificador de país para Namibia figura como valor faltante
+gmr$country_code <- as.character(gmr$country_code)
+gmr <- gmr %>%
+    mutate(country_code = if_else(is.na(country_code), "NA", country_code))
+gmr$country_code <- as.factor(gmr$country_code)
+
+# 3.4. Imputación de missings en la variable workplaces
+gmr <- gmr %>%
+  group_by(country) %>%
+    complete(date = seq(min(gmr$date), max(gmr$date), by = "1 day")) %>%
+  mutate(workplaces = round(na_interpolation(workplaces)),
+         country_code = na.locf(country_code, na.rm = F))
+  
+```
+
+```{r preprocesamiento OxCGRT}
+# 4. Preprocesamiento de OxCGRT y COVID-19 Data Hub
+
+# 4.1 Selección de países y atributos en OxCGRT
+
+OxCGRT <- OxCGRT %>%
+  filter(RegionName=="" & RegionCode=="")
+
+OxCGRT <- OxCGRT[, c("CountryCode", "Date", "E1_Income.support")]
+
+# Generación de atributo que contenga casos activos de COVID-19 en COVID-19 Data Hub
+x <- x %>%
+    group_by(id) %>%
+    mutate(active = confirmed - (recovered + deaths),
+           active = ifelse(active <0, 0, active))
+
+# 4.3 Selección de países y atributos de interés en COVID-19 Data Hub
+x <- x[, c("id", "date","active","key_google_mobility")]
+
+
+# 4.4 Unión de ambas bases de datos
+OxCGRT <- inner_join(OxCGRT, x, by = c("CountryCode" = "id", "Date" = "date"))
+
+# 4.5 Eliminación de COVID-19 Data Hub
+remove(x)
+```
+
+```{r paises}
+# 5. Selección de países para los cuales se posee información en ambas bases
+
+# 5.1 Eliminación si el identificador de país de GMR figura como valor faltante (corresponde a los cruceros donde se han detectado casos de COVID-19)
+OxCGRT <- filter(OxCGRT, !is.na(key_google_mobility))
+
+# 5.2 Se eliminan de OxCGRT los países que no figuran en GMR
+OxCGRT <- filter(OxCGRT, !(key_google_mobility %in% setdiff(OxCGRT$key_google_mobility, gmr$country_code)))
+
+# 5.3 Se eliminan de GMR los países que no figuran en OxCGRT
+gmr <- filter(gmr, !(country_code %in% setdiff(gmr$country_code,OxCGRT$key_google_mobility)))
+```
+
+```{r union GMR y OxCGRT}
+# 6. Preprocesamiento de la unión de las bases de datos GMR y OxCGRT
+
+# 6.1 Unión de las bases
+gmr_OxCGRT <- left_join(gmr, OxCGRT, by = c("country_code" = "key_google_mobility", "date" = "Date"))
+
+# 6.2 Se descartan las variables referentes al identificador de país
+gmr_OxCGRT <- gmr_OxCGRT[, c("country", "date", "workplaces", "E1_Income.support", "active")]
+
+# 6.3 Se completan valores faltantes en la columna de E1_Income.support según el valor informado para el día previo
+gmr_OxCGRT <- gmr_OxCGRT %>% 
+  group_by(country)  %>% 
+  fill(colnames(gmr_OxCGRT[,c("E1_Income.support")]), .direction = "down")
+# BORRAR SI NO HACE FALTA gmr_OxCGRT$E1_Income.support <- as.factor(gmr_OxCGRT$E1_Income.support)
+
+# Se crea copia de los datos para utilizar en el K-Means Clustering
+clustering <- gmr_OxCGRT[,-5]
+```
+
+```{r generacion de atributos}
+# 7. Generación de atributos
+# 7.1 Se crean atributos asociados a la ubicación geográfica
+
+# 7.1.1 Continente 
+gmr_OxCGRT$continent <- countrycode(sourcevar = gmr_OxCGRT$country,
+                            origin = "country.name",
+                            destination = "continent")
+
+# 7.1.2 División geográfica / sociocultural
+gmr_OxCGRT$region <- countrycode(sourcevar = gmr_OxCGRT$country,
+                            origin = "country.name",
+                            destination = "un.regionsub.name")
+
+gmr_OxCGRT$region[gmr_OxCGRT$region == "Taiwan"]<-"Eastern Asia" # Some values were not matched unambiguously: Taiwan 
+#(esto es porque la ONU no reconoce a Taiwan como territorio independiente)
+
+
+# 7.2 Se crean atributos asociados a la fecha
+gmr_OxCGRT <- gmr_OxCGRT %>%
+  mutate(month = month(date, label=TRUE), 
+         weekday = wday(date, label=TRUE),
+         quarter = quarter(date, with_year = FALSE, fiscal_start = 1),
+         day_of_month = day(date),
+         day_of_year= yday(date),
+         week_of_year = week(date))
+```
+
+# CLUSTERING
+El código para rezagar variables proviene de https://gist.github.com/drsimonj/2038ff9f9c67063f384f10fac95de566
+
+```{r clustering}
+# 8. CLustering
+
+# Funcion que crea rezagos
+lags <- seq(6)
+lag_names <- paste(formatC(lags, width = nchar(max(lags)), flag = "0"), 
+  sep = "_")
+lag_functions <- setNames(paste("dplyr::lag(., ", lags, ")"), lag_names)
+
+# 8.1 Creación de rezagos en las variables de interés para el agrupamiento
+clustering <- clustering %>% 
+  group_by(country) %>% 
+  mutate_at(vars(colnames(clustering[,c("E1_Income.support", "workplaces")])), funs_(lag_functions))
+
+# 8.2 Se completa los valores faltantes que se generan en los primeros registros
+clustering <- clustering %>% 
+fill(colnames(clustering), .direction = "downup")
+
+# 8.3 Modificación de la base a formato ancho para que cada una de las filas represente a un país
+clustering <- clustering %>%  pivot_wider(names_from = "date", values_from = -c("date","country"))
+clustering <- as.data.frame(clustering)  %>%
+  unchop(everything())
+
+# 8.4 Se indica que los nombres de los países son los índices de fila
+clustering <- clustering[-c(120,121),]
+clustering <- as.data.frame(clustering)
+rownames(clustering) <- clustering$country
+countries <-  clustering$country
+clustering <- clustering[,-1]
+clustering <- as.data.frame(clustering)
+
+# 8.5 Se establece una semilla para poder reproducir los mismos resultados 
+set.seed(123)
+
+# 8.6 Se recurre a métodos gráficos para establecer la cantidad óptima de clusters
+
+# 8.6.1 Metodo del Codo
+elbow<- fviz_nbclust(clustering, kmeans, method = "wss")
+ggsave("elbow.png", plot = elbow, height = 10, width = 20)
+
+#8.6.2 Metodo de la Silueta promedio
+silhouette <- fviz_nbclust(clustering, kmeans, method = "silhouette")
+ggsave("silhouette.png", plot = silhouette, height = 10, width = 20)
+
+# 8.7 KMeans Clustering
+final <- kmeans(clustering, 2, nstart = 25)
+
+# 8.8 Se incluye el resultado del clustering a la base de datos utilizada para el clustering
+clustering<- clustering %>%
+  mutate(cluster = final$cluster,
+         country = countries)
+clustering <- as.data.frame(clustering)
+rownames(clustering) <- clustering$country
+
+# 8.9 Se incluye el resultado del clustering a la base de datos original
+gmr_OxCGRT <- left_join(gmr_OxCGRT, clustering[,c("country","cluster")], by = c("country" = "country"))
+```
+
+Se debe ejecutar el archivo "plot.Rmd" para obtener las gráficas correspondientes
+
+```{r}
+# 9. Creación de tablas que contienen datos relevantes para la comparación del contenido de cada cluster
+cluster1 <- gmr_OxCGRT %>%
+  dplyr::filter(cluster == 1 & continent =="Americas") %>%
+  summarise(min_workplaces = min(workplaces), 
+            max_active_cases=max(active),
+            mode_income_support = mfv(E1_Income.support))
+cluster1$mode_income_support <- as.factor(cluster1$mode_income_support)
+
+summary(cluster1)
+
+cluster2 <- gmr_OxCGRT %>%
+  filter(cluster == 2) %>%
+  filter(continent =="Americas") %>%
+  summarise(min_workplaces = min(workplaces), 
+            max_active_cases=max(active),
+            mode_income_support = mfv(E1_Income.support))
+cluster2$mode_income_support <- as.factor(cluster2$mode_income_support)
+
+summary(cluster2)
+```
+
+#ANALISIS DE SUPERVIVENCIA
+
+```{r}
+# 10.Copia de los datos al momento para realizar el preprocesamiento necesario para llevar a cabo Análisis de Supervivencia
+survival <- gmr_OxCGRT
+
+# 10.1 No se considerarán días de fin de semana ya que al haber una menor variación en la movilidad relativa con respecto a los valores de referencia, se generan picos (máximos) en la trayectoria de la movilidad laboral.
+survival <- survival %>%
+  filter(!wday(date) %in% c(1, 7))
+
+# 10.2 Tabla temporal que contiene la fecha donde se dio el primer mínimo en la movilidad laboral
+primeros <- survival %>% 
+  group_by(country) %>%
+  filter(workplaces == min(workplaces)) %>%
+  filter(date == min(date)) %>%
+  mutate(minimo = 1)
+
+# 10.3 Unión con la tabla principal
+survival <- left_join(survival, primeros)
+
+remove(primeros)
+```
+
+```{r}
+# 11. Creación de función que contabiliza la cantidad de observaciones posteriores al valor mínimo
+
+todosNA <- function(x){
+  res <- TRUE
+  for(i in 1:length(x)){
+    if(!(is.na(x[i]))){
+      res <- FALSE
+    }
+  }
+  return (res)
+}
+
+
+suma <- function(x) {
+  if(!(todosNA(x))){
+    for(i in 1:length(x)){
+      if (!is.na(x[i])){
+        x[i+1] <- x[i]+1
+        }
+      }
+    return(x[1:(length(x) - 1)])    
+  } else {
+    return(x)
+  }
+}
+```
+
+```{r}
+# 11.1 Implementación de dicha función
+survival <- survival %>%
+  group_by(country) %>%
+  mutate(dias = suma(minimo)) %>%
+  ungroup()
+
+# 11.2 Se descartan los días previos al mínimo de la función
+survival <- filter(survival, !is.na(dias))
+```
+
+```{r}
+# 12. Tabla temporal que contiene la fecha donde se dio el primer máximo en la movilidad laboral (luego de que se dio el primer mínimo)
+maximo <- survival %>% 
+  group_by(country) %>%
+  filter(workplaces == max(workplaces)) %>%
+  filter(date == min(date)) %>%
+  mutate(maximo = 1,
+         maximo_date = date)
+
+# 12.1 Unión con la tabla principal
+
+survival <- left_join(survival, maximo)
+
+survival <- survival %>% 
+  group_by(country) %>% 
+  mutate(maximo = max(maximo, na.rm = T))
+  
+survival <- survival %>% 
+  group_by(country) %>% 
+  filter(date <= maximo_date | is.na(as.character(maximo_date)))
+
+remove(maximo)
+
+
+# 12.2 Formato "Factor" a las variables categóricas
+
+survival$E1_Income.support <- as.factor(survival$E1_Income.support)
+survival$cluster <- as.factor(survival$cluster)
+survival$weekday <- as.factor(survival$weekday)
+survival$month <- as.factor(survival$month)
+survival$quarter <- as.factor(survival$quarter)
+survival$day_of_month <- as.factor(survival$day_of_month)
+survival$day_of_year <- as.factor(survival$day_of_year)
+survival$week_of_year <- as.factor(survival$week_of_year)
+```
+
+```{r}
+summary(survival)
+```
+
+
+```{r}
+# 13. ANALISIS DE SUPERVIVENCIA KAPLAN MEIER
+fit <- survfit(Surv(dias, maximo) ~ cluster, data = survival)
+print(fit)
+summary(fit)
+summary(fit)$table
+```
+
+```{r}
+ggsurvplot(fit,
+           pval = TRUE, conf.int = TRUE,
+           linetype = "strata",
+           surv.median.line = "hv",
+           ggtheme = theme_minimal(),
+           palette = c('#404E88',"#e60000", "#000000"))
+ggsave("kaplan_meier.jpg", height = 10, width = 20)
+```
+
+
+```{r}
+#14. Analisis de supervivencia COX
+res.cox <- coxph(Surv(dias, maximo) ~ cluster + E1_Income.support + continent, data = survival)
+summary(res.cox)
+```
+
+```{r}
+ggforest(res.cox, data = survival)
+ggsave("cox.png", height = 10, width = 20)
+```
+
+#XGBOOST
+
+```{r}
+# 15.1 Creación de rezagos para variables numéricas
+gmr_OxCGRT <- gmr_OxCGRT %>% 
+  group_by(country) %>% 
+  mutate_at(vars(colnames(gmr_OxCGRT[,c("workplaces","active")])), funs_(lag_functions))
+
+# 15.2 Se completan los NA que se generan en los primeros registros
+gmr_OxCGRT <- gmr_OxCGRT %>% 
+fill(colnames(gmr_OxCGRT), .direction = "up")
+
+# 15.3 Se reemplaza el número de trimestre para aclarar que estamos refiriendo a trimestres, ya que éstos seran los nombres de los atributos generados con One-Hot Encoding
+gmr_OxCGRT$quarter[gmr_OxCGRT$quarter == 1] <- "trim_1"
+gmr_OxCGRT$quarter[gmr_OxCGRT$quarter == 2] <- "trim_2"
+gmr_OxCGRT$quarter[gmr_OxCGRT$quarter == 3] <- "trim_3"
+gmr_OxCGRT$quarter[gmr_OxCGRT$quarter == 4] <- "trim_4"
+gmr_OxCGRT$cluster[gmr_OxCGRT$cluster == 1] <- "cluster_1"
+gmr_OxCGRT$cluster[gmr_OxCGRT$cluster == 2] <- "cluster_2"
+gmr_OxCGRT$E1_Income.support[gmr_OxCGRT$E1_Income.support == 0] <- "No_income_support"
+gmr_OxCGRT$E1_Income.support[gmr_OxCGRT$E1_Income.support == 1] <- "income_support_less_50"
+gmr_OxCGRT$E1_Income.support[gmr_OxCGRT$E1_Income.support == 2] <- "income_support_more_50"
+
+# 15.4 One-Hot Encoding de las variables categóricas
+gmr_OxCGRT<- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(country, value,  fill = 0 )
+gmr_OxCGRT<- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(E1_Income.support, value,  fill = 0 )
+gmr_OxCGRT <- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(continent, value,  fill = 0 )
+gmr_OxCGRT <- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(region, value,  fill = 0 )
+gmr_OxCGRT <- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(weekday, value,  fill = 0 )
+gmr_OxCGRT <- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(month, value,  fill = 0 )
+gmr_OxCGRT <- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(quarter, value,  fill = 0 )
+gmr_OxCGRT <- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(day_of_month, value,  fill = 0 )
+gmr_OxCGRT<- gmr_OxCGRT %>% mutate(value = 1)  %>% spread(cluster, value,  fill = 0 )
+```
+```{r}
+colnames(gmr_OxCGRT)
+```
+
+```{r}
+colnames(gmr_OxCGRT)[43]  <- "Ivory Coast"
+colnames(gmr_OxCGRT)[91]  <- "Myanmar"
+gmr_OxCGRT <- gmr_OxCGRT[,-167]
+```
+
+
+```{r}
+train <- gmr_OxCGRT %>%
+  filter(date <= as.Date('2020-07-31', format = "%Y-%m-%d"))
+
+test <- gmr_OxCGRT %>%
+  filter(date > as.Date('2020-07-31', format = "%Y-%m-%d"))
+
+library(openxlsx)
+write.xlsx(train, "gmr_oxcgrt_train.xlsx")
+write.xlsx(test, "gmr_oxcgrt_test.xlsx")
+```
+
